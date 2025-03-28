@@ -1,270 +1,327 @@
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
-    QHeaderView, QPushButton, QDateEdit, QLabel,
-    QTableWidgetItem, QMessageBox, QComboBox,
-    QDialog, QFormLayout, QDialogButtonBox
-)
-from PyQt6.QtCore import QDate
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QTableWidget, QHeaderView,
+                            QTableWidgetItem, QPushButton, QHBoxLayout,
+                            QMessageBox, QDialog, QFormLayout, QComboBox,
+                            QDateEdit, QDialogButtonBox)
+from PyQt6.QtCore import QDate, Qt
 from hotel_management.database.connector import DatabaseConnector
 
 class BookingManager(QWidget):
-    def __init__(self):
+    def __init__(self, parent=None):
         super().__init__()
-        self.setWindowTitle("Управление бронированиями")
+        self.parent = parent
         self.init_ui()
         self.load_bookings()
 
     def init_ui(self):
         layout = QVBoxLayout()
 
-        # Фильтры
-        filter_layout = QHBoxLayout()
-        self.date_from = QDateEdit(QDate.currentDate())
-        self.date_to = QDateEdit(QDate.currentDate().addDays(30))
-        btn_filter = QPushButton("Фильтровать")
-        btn_filter.clicked.connect(self.load_bookings)
-        
-        filter_layout.addWidget(QLabel("С:"))
-        filter_layout.addWidget(self.date_from)
-        filter_layout.addWidget(QLabel("По:"))
-        filter_layout.addWidget(self.date_to)
-        filter_layout.addWidget(btn_filter)
-
-        # Таблица бронирований
+        # Таблица бронирований с запретом редактирования
         self.table = QTableWidget()
         self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels([
-            "ID", "Гость", "Номер", "Заезд", "Выезд", "Статус"
-        ])
+        self.table.setHorizontalHeaderLabels(["ID", "Гость", "Номер", "Заезд", "Выезд", "Статус"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
 
-        # Кнопки
+        # Кнопки управления
         btn_layout = QHBoxLayout()
-        btn_add = QPushButton("Добавить бронь")
-        btn_add.clicked.connect(self.show_add_booking_dialog)
-        btn_remove = QPushButton("Отменить бронь")
-        btn_remove.clicked.connect(self.cancel_booking)
-        
-        btn_layout.addWidget(btn_add)
-        btn_layout.addWidget(btn_remove)
+        self.btn_new = QPushButton("Новое бронирование")
+        self.btn_new.clicked.connect(self.show_new_booking_dialog)
+        self.btn_cancel = QPushButton("Отменить бронь")
+        self.btn_cancel.clicked.connect(self.cancel_booking)
+        self.btn_check_in = QPushButton("Заселить")
+        self.btn_check_in.clicked.connect(self.check_in_guest)
+        self.btn_check_out = QPushButton("Выселить")
+        self.btn_check_out.clicked.connect(self.check_out_guest)
 
-        layout.addLayout(filter_layout)
+        btn_layout.addWidget(self.btn_new)
+        btn_layout.addWidget(self.btn_cancel)
+        btn_layout.addWidget(self.btn_check_in)
+        btn_layout.addWidget(self.btn_check_out)
+
         layout.addWidget(self.table)
         layout.addLayout(btn_layout)
         self.setLayout(layout)
 
     def load_bookings(self):
+        """Загрузка бронирований с проверкой прав"""
+        if self.parent and not self.parent.check_permission('manage_bookings'):
+            QMessageBox.warning(self, "Ошибка доступа", "Недостаточно прав для просмотра бронирований")
+            return
+
         db = DatabaseConnector()
-        if db.connect():
+        if not db.connect():
+            QMessageBox.warning(self, "Ошибка", "Не удалось подключиться к базе данных")
+            return
+
+        try:
             query = """
-            SELECT o.occupancy_id, g.full_name, r.room_id, 
-                   o.check_in_date, o.check_out_date, s.name
-            FROM occupancy o
-            JOIN guests g ON o.guest_id = g.guest_id
-            JOIN rooms r ON o.room_id = r.room_id
+            SELECT b.occupancy_id, g.full_name, r.room_id, 
+                   b.check_in_date, b.check_out_date, s.name
+            FROM occupancy b
+            JOIN guests g ON b.guest_id = g.guest_id
+            JOIN rooms r ON b.room_id = r.room_id
             JOIN statuses s ON r.status_id = s.status_id
-            WHERE o.check_in_date BETWEEN %s AND %s
-            ORDER BY o.check_in_date
+            ORDER BY b.check_in_date
             """
-            result = db.execute_query(
-                query,
-                (
-                    self.date_from.date().toPyDate(),
-                    self.date_to.date().toPyDate()
-                ),
-                fetch=True
-            )
-            
+            result = db.execute_query(query, fetch=True)
+
             if result:
                 self.table.setRowCount(len(result))
                 for row_idx, row in enumerate(result):
                     for col_idx, cell in enumerate(row):
-                        self.table.setItem(row_idx, col_idx, QTableWidgetItem(str(cell)))
+                        item = QTableWidgetItem(str(cell) if cell else "")
+                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                        self.table.setItem(row_idx, col_idx, item)
+            else:
+                self.table.setRowCount(0)
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Ошибка при загрузке бронирований: {str(e)}")
+        finally:
             db.disconnect()
 
-    def show_add_booking_dialog(self):
+    def show_new_booking_dialog(self):
+        """Диалог создания нового бронирования"""
+        if self.parent and not self.parent.check_permission('manage_bookings'):
+            QMessageBox.warning(self, "Ошибка доступа", "Недостаточно прав для создания бронирований")
+            return
+
         dialog = QDialog(self)
         dialog.setWindowTitle("Новое бронирование")
-        dialog.setFixedSize(600, 300)
-        
+        dialog.setFixedSize(500, 400)
+
         layout = QFormLayout()
-        
-        # Выбор гостя
-        self.guest_combo = QComboBox()
-        self.load_guests()
-        
-        # Выбор номера
-        self.room_combo = QComboBox()
-        self.load_available_rooms()
-        
-        # Даты бронирования
-        self.check_in = QDateEdit(QDate.currentDate())
-        self.check_out = QDateEdit(QDate.currentDate().addDays(1))
-        
-        layout.addRow("Гость:", self.guest_combo)
-        layout.addRow("Номер:", self.room_combo)
-        layout.addRow("Дата заезда:", self.check_in)
-        layout.addRow("Дата выезда:", self.check_out)
-        
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(lambda: self.add_booking(dialog))
-        buttons.rejected.connect(dialog.reject)
-        
-        layout.addRow(buttons)
-        dialog.setLayout(layout)
-        dialog.exec()
 
-    def load_guests(self):
-        """Загружает список всех гостей с проверкой на None"""
         db = DatabaseConnector()
-        if db.connect():
-            try:
-                # Получаем всех гостей, включая тех у кого нет телефона
-                result = db.execute_query(
-                    "SELECT guest_id, full_name, phone_number FROM guests ORDER BY full_name",
-                    fetch=True
-                )
-                
-                self.guest_combo.clear()
-                
-                if result:
-                    for guest_id, full_name, phone in result:
-                        # Форматируем отображение с учетом отсутствия телефона
-                        phone_display = phone if phone else "телефон не указан"
-                        display_text = f"{full_name} (ID: {guest_id}, Тел: {phone_display})"
-                        self.guest_combo.addItem(display_text, guest_id)
-            except Exception as e:
-                print(f"Ошибка при загрузке гостей: {e}")
-                QMessageBox.warning(self, "Ошибка", "Не удалось загрузить список гостей")
-            finally:
-                db.disconnect()
+        if not db.connect():
+            QMessageBox.warning(self, "Ошибка", "Не удалось подключиться к базе данных")
+            return
 
-    def load_available_rooms(self):
-        """Загружает список доступных номеров"""
-        db = DatabaseConnector()
-        if db.connect():
-            try:
-                result = db.execute_query(
-                    "SELECT room_id FROM rooms WHERE status_id = 1 ORDER BY room_id",
-                    fetch=True
-                )
-                self.room_combo.clear()
-                if result:
-                    for row in result:
-                        self.room_combo.addItem(f"Номер {row[0]}", row[0])
-            except Exception as e:
-                print(f"Ошибка при загрузке номеров: {e}")
-                QMessageBox.warning(self, "Ошибка", "Не удалось загрузить список номеров")
-            finally:
-                db.disconnect()
+        try:
+            # Загрузка данных для формы
+            guests_query = "SELECT guest_id, full_name FROM guests ORDER BY full_name"
+            guests = db.execute_query(guests_query, fetch=True)
 
-    def add_booking(self, dialog):
-        """Добавляет новое бронирование"""
+            rooms_query = """
+            SELECT r.room_id, r.floor, c.name 
+            FROM rooms r
+            JOIN room_categories c ON r.category_id = c.category_id
+            WHERE r.status_id = 1
+            ORDER BY r.room_id
+            """
+            rooms = db.execute_query(rooms_query, fetch=True)
+
+            if not guests or not rooms:
+                QMessageBox.warning(self, "Ошибка", "Нет доступных гостей или номеров")
+                return
+
+            self.guest_combo = QComboBox()
+            for guest_id, full_name in guests:
+                self.guest_combo.addItem(full_name, guest_id)
+
+            self.room_combo = QComboBox()
+            for room_id, floor, category in rooms:
+                self.room_combo.addItem(f"{room_id} (Этаж {floor}, {category})", room_id)
+
+            self.check_in_date = QDateEdit(QDate.currentDate())
+            self.check_out_date = QDateEdit(QDate.currentDate().addDays(1))
+
+            layout.addRow("Гость:", self.guest_combo)
+            layout.addRow("Номер:", self.room_combo)
+            layout.addRow("Дата заезда:", self.check_in_date)
+            layout.addRow("Дата выезда:", self.check_out_date)
+
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+            buttons.accepted.connect(lambda: self.create_booking(dialog))
+            buttons.rejected.connect(dialog.reject)
+
+            layout.addRow(buttons)
+            dialog.setLayout(layout)
+            dialog.exec()
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Ошибка при загрузке данных: {str(e)}")
+        finally:
+            db.disconnect()
+
+    def create_booking(self, dialog):
+        """Создание нового бронирования через форму"""
         guest_id = self.guest_combo.currentData()
         room_id = self.room_combo.currentData()
-        check_in = self.check_in.date().toPyDate()
-        check_out = self.check_out.date().toPyDate()
-        
-        # Валидация данных
-        if not guest_id:
-            QMessageBox.warning(self, "Ошибка", "Выберите гостя")
-            return
-            
-        if not room_id:
-            QMessageBox.warning(self, "Ошибка", "Выберите номер")
-            return
-            
+        check_in = self.check_in_date.date().toString("yyyy-MM-dd")
+        check_out = self.check_out_date.date().toString("yyyy-MM-dd")
+
         if check_in >= check_out:
             QMessageBox.warning(self, "Ошибка", "Дата выезда должна быть позже даты заезда")
             return
-            
+
         db = DatabaseConnector()
-        if db.connect():
-            try:
-                # Проверяем доступность номера
-                check_query = """
-                SELECT COUNT(*) FROM occupancy 
-                WHERE room_id = %s AND (
-                    (check_in_date <= %s AND check_out_date >= %s) OR
-                    (check_in_date <= %s AND check_out_date >= %s) OR
-                    (check_in_date >= %s AND check_out_date <= %s)
-                )
-                """
-                result = db.execute_query(
-                    check_query,
-                    (room_id, check_in, check_in, check_out, check_out, check_in, check_out),
-                    fetch=True
-                )
-                
-                if result and result[0][0] > 0:
-                    QMessageBox.warning(self, "Ошибка", "Номер уже занят на выбранные даты")
-                    return
-                    
-                # Добавляем бронирование
-                insert_query = """
-                INSERT INTO occupancy (guest_id, room_id, check_in_date, check_out_date)
-                VALUES (%s, %s, %s, %s)
-                """
-                success = db.execute_query(
-                    insert_query,
-                    (guest_id, room_id, check_in, check_out)
-                )
-                
-                if success:
-                    # Обновляем статус номера
-                    db.execute_query(
-                        "UPDATE rooms SET status_id = 4 WHERE room_id = %s",
-                        (room_id,)
-                    )
-                    QMessageBox.information(self, "Успех", "Бронирование добавлено")
-                    self.load_bookings()
-                    dialog.close()
-                else:
-                    QMessageBox.warning(self, "Ошибка", "Не удалось добавить бронирование")
-            except Exception as e:
-                print(f"Ошибка при добавлении бронирования: {e}")
-                QMessageBox.warning(self, "Ошибка", f"Произошла ошибка: {str(e)}")
-            finally:
-                db.disconnect()
+        if not db.connect():
+            QMessageBox.warning(self, "Ошибка", "Не удалось подключиться к базе данных")
+            return
+
+        try:
+            # Проверка доступности номера
+            availability_query = """
+            SELECT COUNT(*) FROM occupancy 
+            WHERE room_id = %s AND (
+                (check_in_date <= %s AND check_out_date >= %s) OR
+                (check_in_date <= %s AND check_out_date >= %s) OR
+                (check_in_date >= %s AND check_out_date <= %s)
+            )
+            """
+            availability_result = db.execute_query(
+                availability_query, 
+                (room_id, check_in, check_in, check_out, check_out, check_in, check_out),
+                fetch=True
+            )
+
+            if availability_result and availability_result[0][0] > 0:
+                QMessageBox.warning(self, "Ошибка", "Номер уже занят на выбранные даты")
+                return
+
+            # Создание бронирования
+            query = """
+            INSERT INTO occupancy (guest_id, room_id, check_in_date, check_out_date)
+            VALUES (%s, %s, %s, %s)
+            """
+            success = db.execute_query(query, (guest_id, room_id, check_in, check_out))
+
+            if success:
+                # Обновление статуса номера
+                update_room_query = "UPDATE rooms SET status_id = 3 WHERE room_id = %s"
+                db.execute_query(update_room_query, (room_id,))
+
+                QMessageBox.information(self, "Успех", "Бронирование успешно создано")
+                self.load_bookings()
+                dialog.close()
+            else:
+                QMessageBox.warning(self, "Ошибка", "Не удалось создать бронирование")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Ошибка при создании бронирования: {str(e)}")
+        finally:
+            db.disconnect()
 
     def cancel_booking(self):
-        """Отменяет выбранное бронирование"""
+        """Отмена бронирования с подтверждением"""
+        if self.parent and not self.parent.check_permission('manage_bookings'):
+            QMessageBox.warning(self, "Ошибка доступа", "Недостаточно прав для отмены бронирований")
+            return
+
         selected_row = self.table.currentRow()
         if selected_row == -1:
             QMessageBox.warning(self, "Ошибка", "Выберите бронирование для отмены")
             return
-            
+
         booking_id = self.table.item(selected_row, 0).text()
         room_id = self.table.item(selected_row, 2).text()
-        
+        guest_name = self.table.item(selected_row, 1).text()
+
         reply = QMessageBox.question(
             self,
             "Подтверждение",
-            "Вы уверены, что хотите отменить это бронирование?",
+            f"Вы уверены, что хотите отменить бронирование для {guest_name}?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            db = DatabaseConnector()
-            if db.connect():
-                try:
-                    # Удаляем бронирование
-                    delete_query = "DELETE FROM occupancy WHERE occupancy_id = %s"
-                    success = db.execute_query(delete_query, (booking_id,))
-                    
-                    if success:
-                        # Возвращаем номер в доступные
-                        db.execute_query(
-                            "UPDATE rooms SET status_id = 1 WHERE room_id = %s",
-                            (room_id,)
-                        )
-                        QMessageBox.information(self, "Успех", "Бронирование отменено")
-                        self.load_bookings()
-                    else:
-                        QMessageBox.warning(self, "Ошибка", "Не удалось отменить бронирование")
-                except Exception as e:
-                    print(f"Ошибка при отмене бронирования: {e}")
-                    QMessageBox.warning(self, "Ошибка", f"Произошла ошибка: {str(e)}")
-                finally:
-                    db.disconnect()
+
+        if reply == QMessageBox.StandardButton.No:
+            return
+
+        db = DatabaseConnector()
+        if not db.connect():
+            QMessageBox.warning(self, "Ошибка", "Не удалось подключиться к базе данных")
+            return
+
+        try:
+            # Удаление бронирования
+            query = "DELETE FROM occupancy WHERE occupancy_id = %s"
+            success = db.execute_query(query, (booking_id,))
+
+            if success:
+                # Обновление статуса номера
+                update_room_query = "UPDATE rooms SET status_id = 1 WHERE room_id = %s"
+                db.execute_query(update_room_query, (room_id,))
+
+                QMessageBox.information(self, "Успех", "Бронирование успешно отменено")
+                self.load_bookings()
+            else:
+                QMessageBox.warning(self, "Ошибка", "Не удалось отменить бронирование")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Ошибка при отмене бронирования: {str(e)}")
+        finally:
+            db.disconnect()
+
+    def check_in_guest(self):
+        """Заселение гостя с проверкой прав"""
+        if self.parent and not self.parent.check_permission('manage_bookings'):
+            QMessageBox.warning(self, "Ошибка доступа", "Недостаточно прав для заселения гостей")
+            return
+
+        selected_row = self.table.currentRow()
+        if selected_row == -1:
+            QMessageBox.warning(self, "Ошибка", "Выберите бронирование для заселения")
+            return
+
+        booking_id = self.table.item(selected_row, 0).text()
+        room_id = self.table.item(selected_row, 2).text()
+        guest_name = self.table.item(selected_row, 1).text()
+
+        db = DatabaseConnector()
+        if not db.connect():
+            QMessageBox.warning(self, "Ошибка", "Не удалось подключиться к базе данных")
+            return
+
+        try:
+            # Обновление статуса номера
+            update_room_query = "UPDATE rooms SET status_id = 4 WHERE room_id = %s"
+            success = db.execute_query(update_room_query, (room_id,))
+
+            if success:
+                QMessageBox.information(self, "Успех", f"Гость {guest_name} успешно заселен")
+                self.load_bookings()
+            else:
+                QMessageBox.warning(self, "Ошибка", "Не удалось заселить гостя")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Ошибка при заселении гостя: {str(e)}")
+        finally:
+            db.disconnect()
+
+    def check_out_guest(self):
+        """Выселение гостя с проверкой прав"""
+        if self.parent and not self.parent.check_permission('manage_bookings'):
+            QMessageBox.warning(self, "Ошибка доступа", "Недостаточно прав для выселения гостей")
+            return
+
+        selected_row = self.table.currentRow()
+        if selected_row == -1:
+            QMessageBox.warning(self, "Ошибка", "Выберите бронирование для выселения")
+            return
+
+        booking_id = self.table.item(selected_row, 0).text()
+        room_id = self.table.item(selected_row, 2).text()
+        guest_name = self.table.item(selected_row, 1).text()
+
+        db = DatabaseConnector()
+        if not db.connect():
+            QMessageBox.warning(self, "Ошибка", "Не удалось подключиться к базе данных")
+            return
+
+        try:
+            # Обновление статуса номера
+            update_room_query = "UPDATE rooms SET status_id = 2 WHERE room_id = %s"
+            success = db.execute_query(update_room_query, (room_id,))
+
+            if success:
+                # Добавление записи об уборке
+                cleaning_query = """
+                INSERT INTO cleaning (room_id, status_id, cleaning_date)
+                VALUES (%s, 1, NOW())
+                """
+                db.execute_query(cleaning_query, (room_id,))
+
+                QMessageBox.information(self, "Успех", f"Гость {guest_name} успешно выселен")
+                self.load_bookings()
+            else:
+                QMessageBox.warning(self, "Ошибка", "Не удалось выселить гостя")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Ошибка при выселении гостя: {str(e)}")
+        finally:
+            db.disconnect()

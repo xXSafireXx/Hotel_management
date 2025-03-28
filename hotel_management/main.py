@@ -1,23 +1,26 @@
 import sys
 from PyQt6.QtWidgets import QApplication
-from ui.auth.login_window import LoginWindow
+from hotel_management.ui.auth.login_window import LoginWindow
+from hotel_management.ui.admin.admin_dashboard import AdminDashboard
 
-class HotelApp:
+class MainApp:
     def __init__(self):
+        """Инициализация главного приложения"""
         self.app = QApplication(sys.argv)
         self.login_window = LoginWindow()
         self.login_window.login_success.connect(self.on_login_success)
-
+        self.login_window.show()
+        
     def on_login_success(self, user_id, role_id):
-        from ui.admin.admin_dashboard import AdminDashboard
+        """Обработчик успешного входа"""
         self.main_window = AdminDashboard(user_id, role_id)
         self.main_window.show()
         self.login_window.close()
-
+        
     def run(self):
-        self.login_window.show()
+        """Запуск приложения"""
         sys.exit(self.app.exec())
 
 if __name__ == "__main__":
-    app = HotelApp()
+    app = MainApp()
     app.run()
